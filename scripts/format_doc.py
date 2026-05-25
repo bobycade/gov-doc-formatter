@@ -15,6 +15,9 @@ import re
 import argparse
 import json
 import os
+import shutil
+import tempfile
+import importlib.util
 from docx import Document
 from docx.shared import Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -591,7 +594,8 @@ def convert_markdown(md_path, docx_path):
 def _read_input_text(input_path, plain=False):
     """Read input file and return plain text, regardless of format.
 
-    Supports .txt, .md (returned as-is), and .docx (extracted via pandoc).
+    Supports .txt, .md (returned as-is), .docx (extracted via pandoc),
+    .wps and .doc (cascading conversion: pandoc -> LibreOffice -> error).
     Set plain=True to strip ALL formatting (use for web-copied / messy docx).
     """
     ext = os.path.splitext(input_path)[1].lower()
@@ -611,9 +615,128 @@ def _read_input_text(input_path, plain=False):
         text = text.replace('\\]', ']')
         text = text.replace('\\#', '#')
         return text
+    elif ext in ('.wps', '.doc'):
+        return _read_binary_doc(input_path, plain)
     else:
         with open(input_path, 'r', encoding='utf-8') as f:
             return f.read()
+
+
+def _read_via_soffice(input_path, plain=False):
+    """Convert .wps/.doc to text via LibreOffice headless conversion.
+
+    Converts the binary document to a temporary .docx, then extracts text
+    using pandoc (the same pipeline used for native .docx files).
+    """
+    import subprocess
+
+    tmpdir = tempfile.mkdtemp(prefix='govdoc_')
+    try:
+        # Dynamically import the docx skill's soffice helper
+        skills_dir = os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))))
+        soffice_py = os.path.join(
+            skills_dir, 'docx', 'scripts', 'office', 'soffice.py')
+
+        if os.path.exists(soffice_py):
+            spec = importlib.util.spec_from_file_location(
+                '_soffice_helper', soffice_py)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            result = mod.run_soffice(
+                ['--headless', '--convert-to', 'docx',
+                 '--outdir', tmpdir, input_path],
+                capture_output=True, text=True, timeout=120)
+        else:
+            result = subprocess.run(
+                ['soffice', '--headless', '--convert-to', 'docx',
+                 '--outdir', tmpdir, input_path],
+                capture_output=True, text=True, timeout=120)
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"LibreOffice conversion failed (exit {result.returncode}): "
+                f"{result.stderr.strip() or result.stdout.strip()}")
+
+        base = os.path.splitext(os.path.basename(input_path))[0]
+        tmp_docx = os.path.join(tmpdir, base + '.docx')
+        if not os.path.exists(tmp_docx):
+            raise RuntimeError(
+                f"soffice did not produce expected output: {tmp_docx}")
+
+        fmt = 'plain' if plain else 'markdown'
+        result = subprocess.run(
+            ['pandoc', tmp_docx, '-t', fmt, '--wrap=none'],
+            capture_output=True, text=True, encoding='utf-8',
+            env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"pandoc extraction failed after soffice conversion: "
+                f"{result.stderr}")
+
+        text = result.stdout
+        text = text.replace('\\*', '*')
+        text = text.replace('\\[', '[')
+        text = text.replace('\\]', ']')
+        text = text.replace('\\#', '#')
+        return text
+
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _read_binary_doc(input_path, plain=False):
+    """Read .wps or .doc binary document via cascading conversion.
+
+    Tries in order:
+      1. pandoc (some installs support .doc/.wps via Word COM or custom readers)
+      2. LibreOffice soffice (headless conversion to .docx, then pandoc)
+      3. Helpful error message with installation instructions
+    """
+    import subprocess
+
+    errors = []
+
+    # Stage 1: try pandoc directly
+    try:
+        fmt = 'plain' if plain else 'markdown'
+        result = subprocess.run(
+            ['pandoc', input_path, '-t', fmt, '--wrap=none'],
+            capture_output=True, text=True, encoding='utf-8',
+            env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
+        if result.returncode == 0 and result.stdout.strip():
+            text = result.stdout
+            text = text.replace('\\*', '*')
+            text = text.replace('\\[', '[')
+            text = text.replace('\\]', ']')
+            text = text.replace('\\#', '#')
+            return text
+        else:
+            errors.append(
+                f"pandoc: {result.stderr.strip() or 'returned empty output'}")
+    except FileNotFoundError:
+        errors.append("pandoc: not found on PATH")
+    except Exception as e:
+        errors.append(f"pandoc: {e}")
+
+    # Stage 2: try soffice (LibreOffice headless)
+    try:
+        return _read_via_soffice(input_path, plain)
+    except FileNotFoundError:
+        errors.append("soffice: LibreOffice not found on PATH")
+    except Exception as e:
+        errors.append(f"soffice: {e}")
+
+    # Stage 3: all methods failed
+    ext = os.path.splitext(input_path)[1]
+    raise RuntimeError(
+        f"Cannot read {ext} file '{os.path.basename(input_path)}'.\n"
+        f"Conversion attempts:\n"
+        + ''.join(f"  - {err}\n" for err in errors) +
+        f"\nTo enable {ext} support, install LibreOffice:\n"
+        f"  https://www.libreoffice.org/download/\n"
+        f"Or manually convert {ext} to .docx first, then use --auto mode."
+    )
 
 
 def _is_body_num_pattern(text):

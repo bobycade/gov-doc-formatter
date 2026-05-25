@@ -13,9 +13,10 @@ Converts markdown to .docx in standard Chinese official document (公文) format
 # Standard: markdown → docx
 python scripts/format_doc.py --input document.md --output document.docx
 
-# Auto mode: .txt / .docx / unformatted .md → docx
+# Auto mode: .txt / .docx / .wps / .doc / unformatted .md → docx
 python scripts/format_doc.py --input document.docx --auto
 python scripts/format_doc.py --input notes.txt --auto --output result.docx
+python scripts/format_doc.py --input document.wps --auto
 ```
 
 If `--output` is omitted, the script auto-names the output. In auto mode, `_已排版` is appended.
@@ -35,7 +36,9 @@ When the input is not a structured markdown file, use `--auto` to let the script
 
 Long heading lines (> 45 chars with `。`) are auto-split: heading text stays as heading, trailing body text becomes a separate paragraph.
 
-Supports .txt, .docx (extracted via pandoc), and unformatted .md files.
+Supports .txt, .docx, .wps, .doc (extracted via pandoc/LibreOffice), and unformatted .md files.
+
+> **Note:** For `.wps` and `.doc` files, the script tries pandoc first, then falls back to LibreOffice headless conversion. Install [LibreOffice](https://www.libreoffice.org/download/) if pandoc cannot read these formats directly.
 
 ## Supported Markdown Features
 
