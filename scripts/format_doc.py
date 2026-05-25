@@ -57,6 +57,20 @@ def _rf(run, name=FS, east=None, size=Pt(16), bold=False):
     run._element.rPr.rFonts.set(qn('w:eastAsia'), east)
 
 
+def _add_spacing(rPr, val):
+    """Set character spacing on a run-properties element (twips, negative = tighter)."""
+    from lxml import etree
+    sp = etree.SubElement(rPr, qn('w:spacing'))
+    sp.set(qn('w:val'), str(val))
+
+
+def _add_kern(rPr, val):
+    """Enable kerning above a given font size (half-points)."""
+    from lxml import etree
+    kern = etree.SubElement(rPr, qn('w:kern'))
+    kern.set(qn('w:val'), str(val))
+
+
 def _add_mixed(p, text, name, east, size, bold=False):
     """Add text to paragraph, auto-switching EN font for numbers/English."""
     parts = re.split(r'([a-zA-Z0-9%\-\.㎡‰＋≥≤～/°℃]+)', text)
@@ -173,12 +187,27 @@ def _body_core(p, text, indent=True):
 # ── Paragraph builders ──────────────────────────────────────────
 
 def add_title(doc, text):
-    """Main title: 方正小标宋简体 22pt, centered (not bold per GB/T 9704-2012)."""
+    """Main title: 方正小标宋简体 22pt, centered (not bold per GB/T 9704-2012).
+
+    Uses a single run with uniform font so that numbers and Chinese
+    characters share the same typeface, avoiding the visual gaps that
+    would appear if numbers were rendered in Times New Roman.
+    """
+    text = _convert_quotes(text)
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p.paragraph_format.first_line_indent = Pt(0)
     p.paragraph_format.space_after = Pt(10)
-    _add_rich_text(p, text, FZ, FZ, Pt(22), False)
+    r = p.add_run(text)
+    r.font.name = EN
+    r.font.size = Pt(22)
+    r.bold = False
+    rPr = r._element.rPr
+    rPr.rFonts.set(qn('w:eastAsia'), FZ)
+    # Tighten spacing slightly and enable kerning to reduce visual
+    # gaps at CJK/Latin font transitions within the single run.
+    _add_spacing(rPr, -4)
+    _add_kern(rPr, 44)
 
 
 def add_subtitle(doc, text):
@@ -192,13 +221,13 @@ def add_subtitle(doc, text):
 
 
 def add_h1(doc, text):
-    """Chapter heading (一、二、): 黑体 16pt bold."""
+    """Chapter heading (一、二、): 黑体 16pt."""
     p = doc.add_paragraph()
     _set_outline(p, 0)
     p.paragraph_format.first_line_indent = Pt(32)
     p.paragraph_format.line_spacing = Pt(29)
     _set_widow_control(p)
-    _add_rich_text(p, text, HT, HT, Pt(16), True)
+    _add_rich_text(p, text, HT, HT, Pt(16), False)
 
 
 def add_h2(doc, text):
@@ -614,6 +643,9 @@ def _read_input_text(input_path, plain=False):
         text = text.replace('\\[', '[')
         text = text.replace('\\]', ']')
         text = text.replace('\\#', '#')
+        # Strip **bold** markers from pandoc output so they don't
+        # interfere with auto_structure's own bold label processing.
+        text = re.sub(r'\*\*', '', text)
         return text
     elif ext in ('.wps', '.doc'):
         return _read_binary_doc(input_path, plain)
@@ -688,6 +720,7 @@ def _read_via_soffice(input_path, plain=False):
         text = text.replace('\\[', '[')
         text = text.replace('\\]', ']')
         text = text.replace('\\#', '#')
+        text = re.sub(r'\*\*', '', text)
         return text
 
     finally:
@@ -747,6 +780,7 @@ def _read_via_wps_com(input_path, plain=False):
         text = text.replace('\\[', '[')
         text = text.replace('\\]', ']')
         text = text.replace('\\#', '#')
+        text = re.sub(r'\*\*', '', text)
         return text
 
     finally:
@@ -779,6 +813,7 @@ def _read_binary_doc(input_path, plain=False):
             text = text.replace('\\[', '[')
             text = text.replace('\\]', ']')
             text = text.replace('\\#', '#')
+            text = re.sub(r'\*\*', '', text)
             return text
         else:
             errors.append(
@@ -823,7 +858,7 @@ def _is_body_num_pattern(text):
     Patterns like 一是/二是, 第一, 一方面, （1）（2） are body, not headings.
     """
     return bool(re.match(
-        r'^[一二三四五六七八九十]+(是|方面|项|个|种|类|条|款|点|要)|'
+        r'^[一二三四五六七八九十]+(是|方面|项|种|类|条|款|点|要)|'
         r'^第[一二三四五六七八九十]+[，,]|'
         r'^（\d+）|'
         r'^\(?\d+[\)）]|'
@@ -838,7 +873,7 @@ def _bold_body_label(text):
     period: "一是xxx。" → "**一是xxx。**"
     """
     label_re = (
-        r'[一二三四五六七八九十]+(?:是|方面|项|个|种|类|条|款|点|要)'
+        r'[一二三四五六七八九十]+(?:是|方面|项|种|类|条|款|点|要)'
         r'|第[一二三四五六七八九十]+[，,]'
     )
     full_re = re.compile(f'({label_re})')
@@ -900,14 +935,18 @@ def auto_structure(text):
     in_level2 = False   # inside a ### section
     title_done = False  # title already emitted
     has_chinese_headings = False  # seen any 一、 or （一）
+    consumed = set()    # lines consumed by lookahead (e.g., subtitle)
 
     def _is_title_candidate(s):
-        """First short non-numbered line is a title candidate."""
+        """Short line that looks like a title (not a numbered heading or list item)."""
         return (len(s) >= 4 and len(s) <= 80
-                and not re.match(r'^[一二三四五六七八九十（\d#]', s)
+                and not re.match(r'^[一二三四五六七八九十（#]', s)
+                and not re.match(r'^\d+[\.\、\)）]', s)
                 and not s.startswith('>') and not s.startswith('|'))
 
     for i, line in enumerate(lines):
+        if i in consumed:
+            continue
         stripped = line.strip()
         if not stripped:
             result.append('')
@@ -931,8 +970,29 @@ def auto_structure(text):
             plain = bold_m.group(1) + after_bold
 
         # ── Detect main title: first non-empty line that looks like a title ──
+        # If the next non-empty line is also a title candidate, emit it as
+        # a bold subtitle (typically the issuing authority).
         if not title_done and _is_title_candidate(plain):
             title_done = True
+            # Look ahead for a subtitle line (skip at most 2 blank lines)
+            j = i + 1
+            blanks = 0
+            while j < len(lines) and not lines[j].strip() and blanks < 2:
+                j += 1
+                blanks += 1
+            if j < len(lines):
+                next_plain = lines[j].strip()
+                m = re.match(r'^\*\*(.+?)\*\*', next_plain)
+                if m:
+                    next_plain = m.group(1) + next_plain[m.end():]
+                if _is_title_candidate(next_plain):
+                    result.append(f'# {plain}')
+                    result.append('')
+                    result.append(f'> **{next_plain}**')
+                    result.append('')
+                    for k in range(i + 1, j + 1):
+                        consumed.add(k)
+                    continue
             result.append(f'# {plain}')
             result.append('')
             continue
