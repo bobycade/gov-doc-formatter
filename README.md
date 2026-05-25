@@ -1,52 +1,290 @@
-# gov-doc-formatter / 政府公文格式化工具
+# 政府公文格式化工具 (gov-doc-formatter)
 
-Chinese government document formatter — converts markdown to `.docx` per **GB/T 9704-2012**.
+将 Markdown / 纯文本 / WPS / Word 文档一键转换为符合 **GB/T 9704-2012** 标准的 `.docx` 公文。
 
-政府公文格式化工具 — 将 Markdown 转换为符合 **GB/T 9704-2012** 标准的 `.docx` 文件。
+---
 
-## Features / 功能特性
+## 解决的痛点
 
-- **标准合规排版**：A4 版面，正确页边距（3.7/3.5/2.8/2.6 cm），29pt 固定行距
-- **多级标题体系**：一、/（一）/ 1. /（1）/ ①②③ 层次结构
-- **智能模式（--auto）**：自动识别纯文本、`.docx`、`.wps`、`.doc` 或无格式 `.md` 的结构
-- **三是标签加粗**：自动将"一是/二是/三是"等序数词及其后续内容（至首个句号）加粗
-- **表格支持**：表头蓝底、黑体加粗，表身仿宋
-- **中英混排**：中文文本中的英文/数字自动使用 Times New Roman
+在政府机关和企事业单位的日常工作中，公文排版始终是一个高频且耗时的工作：
 
-## Quick Start / 快速开始
+| 痛点 | 传统做法 | 本工具 |
+|------|----------|--------|
+| **手动调格式** | 在 Word/WPS 里逐段设置字体、字号、行距、缩进，一份万字材料需 20-40 分钟 | 一键生成，几秒完成 |
+| **格式不统一** | 多人协作时每个人习惯不同，汇总后需要重新统稿 | 统一输出，杜绝格式差异 |
+| **标题编号混乱** | 手动编号容易跳号、重复，修改结构后需要逐条重编 | 自动规范化：一、→（一）→ 1. →（1）的 GB/T 9704 层级 |
+| **WPS 文件难处理** | 领导发来的 .wps 文件打不开或格式错乱 | 原生支持 .wps/.doc 读取，自动提取内容后排版 |
+| **中英文混排** | 中文报告里的数字和英文没有使用 Times New Roman，不符合公文规范 | 正文自动将数字/英文设为 Times New Roman |
+| **"一是/二是" 加粗** | 手工选中逐个加粗，容易遗漏 | 自动识别并加粗序数词至首个句号 |
+
+---
+
+## 核心功能
+
+### 1. 智能排版引擎（`--auto` 模式）
+
+无需学习 Markdown 语法。直接把 `.txt`、`.docx`、`.wps`、`.doc` 或未格式化的 `.md` 扔进去，程序自动：
+
+- 识别主标题（第一行短文本）和副标题（发文机关）
+- 识别一、二、三、... 作为一级章节标题
+- 识别（一）（二）（三）... 作为二级小节标题
+- 识别 `N. ` 作为三级小标题
+- 识别"一是/二是/第一/一方面"等作为正文序数词并自动加粗
+- 长标题（超过 45 字含句号）自动拆分为标题 + 正文
+
+### 2. 标准 Markdown 排版模式
+
+面向熟练用户，提供完整的 Markdown → 公文转换能力，见下方语法参考。
+
+### 3. 多格式输入支持
+
+| 输入格式 | 模式 | 说明 |
+|----------|------|------|
+| `.md` | 标准 / Auto | 结构化 Markdown 直接转换；未格式化的可用 `--auto` |
+| `.txt` | Auto | 纯文本自动识别结构 |
+| `.docx` | Auto | 通过 pandoc 提取文本后自动排版 |
+| `.wps` | Auto | 级联转换管道：pandoc → LibreOffice → WPS COM |
+| `.doc` | Auto | 同上（WPS Office 旧版格式） |
+
+`.wps`/`.doc` 转换策略（自动 fallback）：
+1. **pandoc -f doc** — 直接读取（如果 pandoc 支持）
+2. **LibreOffice headless** — 无界面转 .docx → pandoc 提取
+3. **WPS Office COM (Windows)** — 调用 WPS 打开并另存为 .docx → pandoc 提取
+4. 三条路径全失败则抛出带安装指引的错误信息
+
+### 4. GB/T 9704-2012 规范排版
+
+- **纸张**: A4 (21.0 × 29.7 cm)
+- **页边距**: 上 3.7cm, 下 3.5cm, 左 2.8cm, 右 2.6cm
+- **行距**: 固定 29pt
+- **缩进**: 首行缩进 2 字符 (32pt)
+- **对齐**: 两端对齐
+
+### 5. 多级标题体系（自动编号规范化）
+
+| 级数 | 格式 | 字体 | 字号 | 样式 |
+|------|------|------|------|------|
+| 主标题 | `#` | 方正小标宋简体 | 22pt | 居中 |
+| 副标题 | `>` | 楷体_GB2312 | 16pt | 居中，支持粗体 |
+| 一级标题 | `## 一、` | 黑体 | 16pt | 首行缩进 32pt |
+| 二级标题 | `### （一）` | 楷体_GB2312 | 16pt | 粗体，首行缩进 32pt |
+| 三级标题 | `#### 1.` | 仿宋_GB2312 | 16pt | 粗体，首行缩进 32pt |
+| 正文 | — | 仿宋_GB2312 | 16pt | 首行缩进 32pt |
+| 附注 | `>` | 楷体_GB2312 | 14pt | 首行缩进 32pt |
+| 落款 | `>>` | 仿宋_GB2312 | 16pt | 右对齐 |
+
+标题编号会自动规范化——你写 `### 1.1` 或 `### 一、` 都会被统一为 `（一）（二）（三）` 的序号。
+
+### 6. 正文序数词自动加粗
+
+"一是/二是/第一/一方面/一项/一种/一类/一条/一款/一点/一要"及其至首个句号的内容自动加粗，符合公文排版惯例。
+
+### 7. 表格支持
+
+- 表头：黑体 12pt 粗体，蓝底 (#D9E2F3)，居中
+- 表身：仿宋_GB2312 12pt
+- 内容型表格（单元格超 20 字）：非首列左对齐
+- 全表居中，应用 Word 表格网格样式
+
+### 8. 中英文混排
+
+正文中的英文、数字、百分号、单位符号自动使用 Times New Roman，中文使用对应公文字体，符合公文排版规范。
+
+### 9. 引号自动转换
+
+ASCII 直引号 `""` 和 `''` 自动转换为中文弯引号 `""` 和 `''`。
+
+### 10. 页码支持
+
+`--page-numbers` 参数可在页脚添加居中页码（仿宋 14pt）。
+
+---
+
+## 环境要求
+
+| 依赖 | 用途 | 必装 |
+|------|------|------|
+| Python 3.8+ | 运行环境 | ✅ |
+| `python-docx` | 生成 .docx | ✅ |
+| `pandoc` | 读取 .docx 的文本提取 | ✅ |
+| WPS Office（Windows）| 读取 .wps/.doc 的 fallback | 可选 |
+| LibreOffice（跨平台）| 读取 .wps/.doc 的 fallback | 可选 |
+
+### 系统字体要求
+
+以下四种字体必须安装在系统中（Windows 通常已预装后三种）：
+
+- **方正小标宋简体** — 主标题专用（需自行安装）
+- **黑体** — 一级标题
+- **楷体_GB2312** — 二级标题、副标题、附注
+- **仿宋_GB2312** — 正文、三级标题、落款
+
+安装字体后需**重启电脑**或重启正在使用字体的应用程序才能生效。
+
+---
+
+## 安装
 
 ```bash
-# Standard: markdown → docx / 标准模式
-python scripts/format_doc.py --input document.md
+# 克隆仓库
+git clone https://github.com/bobycade/gov-doc-formatter.git
 
-# Auto mode: .txt / .docx / .wps / .doc / unformatted .md → docx / 智能模式
-python scripts/format_doc.py --input document.docx --auto
-python scripts/format_doc.py --input document.wps --auto
+# 安装 Python 依赖
+pip install python-docx
+
+# （可选）安装 pandoc —— Windows 可到 https://pandoc.org 下载
+# （可选）安装 LibreOffice —— 用于 .wps/.doc 的跨平台转换
 ```
 
-## Requirements / 环境要求
+---
 
-- Python 3.8+
-- `python-docx` (`pip install python-docx`)
-- `pandoc`（auto 模式下处理 `.docx` 输入时需要）
-- 处理 `.wps`/`.doc` 文件时需额外安装以下之一：**WPS Office** (Windows) 或 **LibreOffice**（跨平台）
-- 系统字体：方正小标宋简体, 黑体, 楷体_GB2312, 仿宋_GB2312
+## 快速开始
 
-## Usage / 使用方式
+```bash
+# 标准模式：Markdown → 公文
+python scripts/format_doc.py --input 报告.md
+
+# 智能模式：自动识别结构 → 公文
+python scripts/format_doc.py --input 会议纪要.txt --auto
+python scripts/format_doc.py --input 来文.docx --auto
+python scripts/format_doc.py --input 领导发来的.wps --auto
+python scripts/format_doc.py --input 旧版文件.doc --auto
+
+# 指定输出路径
+python scripts/format_doc.py --input 稿件.md --output 正式稿.docx
+
+# 带页码
+python scripts/format_doc.py --input 稿件.md --page-numbers
+
+# 清除所有格式（处理从网页粘贴的混乱 docx）
+python scripts/format_doc.py --input 混乱稿件.docx --auto --plain
+```
+
+`--auto` 模式下如不指定 `--output`，输出文件自动在原名后添加 `_已排版` 后缀。
+
+---
+
+## Markdown 语法参考
+
+### 标题层级
+
+```markdown
+# 台州市福利彩票发行中心2024年度工作总结    ← 主标题（方正小标宋简体 22pt，居中）
+
+> **台州市福利彩票发行中心**                ← 副标题/发文机关（楷体 16pt，居中，粗体）
+
+## 一、2024年工作完成情况                    ← 一级标题（黑体 16pt）
+
+### （一）坚持党建引航，提高政治站位          ← 二级标题（楷体 16pt 粗体）
+
+#### 1. 丰富产品供给                        ← 三级标题（仿宋 16pt 粗体）
+```
+
+### 正文
+
+```markdown
+正文直接书写，无需任何前缀。每段首行自动缩进 2 字符。
+**需要强调的内容**用双星号包裹即可加粗。
+```
+
+### 序数词加粗（自动处理）
+
+"一是/二是/第一/一方面"等序数词及其至首个句号的内容会被自动加粗：
+
+```markdown
+一是加强组织建设。制定工作方案，严格把握时间节点。
+二是强化学习教育。组织全体党员开展主题党日活动。
+```
+
+### 列表
+
+```markdown
+- 无序列表项 → 自动编号为 GB/T 9704 层级序列
+- 在 ## 或 ### 下 → 1. 2. 3.
+- 在 #### 下 → （1）（2）（3）
+
++ 加号列表 → ①②③④⑤ 圈号序列
+```
+
+### 表格
+
+```markdown
+| 项目 | 内容 | 完成情况 |
+|------|------|----------|
+| 党建工作 | 成立党支部 | 已完成 |
+| 渠道建设 | 净增网点 54 个 | 已完成 |
+```
+
+### 附注和落款
+
+```markdown
+> 本文为征求意见稿，请于5月30日前反馈修改意见。
+
+>> 台州市福利彩票发行中心
+>> 2024年12月31日
+```
+
+---
+
+## GB/T 9704-2012 编号层级
+
+| 层级 | 格式 | 使用场景 |
+|------|------|----------|
+| 1 级 | 一、二、三、 | `##` 章节标题 |
+| 2 级 | （一）（二）（三） | `###` 小节标题 |
+| 3 级 | 1. 2. 3. | `####` 小标题；`##`/`###` 下的 `- ` 列表 |
+| 4 级 | （1）（2）（3） | `####` 下的 `- ` 列表 |
+| 5 级 | ①②③ | `+ ` 列表（不自动生成） |
+
+- 层级必须顺序使用，不可跳级
+- `1.` 后有一个空格再跟文字
+- `（一）` 和 `（1）` 后不加标点
+
+---
+
+## 命令行参数
+
+| 参数 | 说明 |
+|------|------|
+| `--input` / `-i` | 输入文件路径（必填） |
+| `--output` / `-o` | 输出文件路径（可选，自动生成则添加 `_已排版` 后缀） |
+| `--auto` | 智能模式：自动识别文档结构，适用于非标准 Markdown 输入 |
+| `--plain` | 结合 `--auto` 使用，先清除所有格式再排版 |
+| `--page-numbers` | 在页脚添加居中页码 |
+
+---
+
+## 项目结构
 
 ```
-python scripts/format_doc.py --input source.md --output result.docx
-python scripts/format_doc.py --input source.md --output result.docx --page-numbers
-python scripts/format_doc.py --input notes.txt --auto
-python scripts/format_doc.py --input messy.docx --auto
-python scripts/format_doc.py --input document.wps --auto
-python scripts/format_doc.py --input legacy.doc --auto
+gov-doc-formatter/
+├── README.md                  # 项目说明（本文件）
+├── SKILL.md                   # 完整 Markdown 语法与排版细节参考
+└── scripts/
+    └── format_doc.py          # 核心脚本（单文件，无其他依赖）
 ```
 
-See [SKILL.md](SKILL.md) for full markdown syntax reference and formatting details.
+---
 
-完整 Markdown 语法参考及排版细节请参阅 [SKILL.md](SKILL.md)。
+## 常见问题
 
-## License / 许可证
+**Q: 为什么生成的 .docx 里标题字体不对？**
+A: 检查系统是否安装了方正小标宋简体。该字体为商业字体，需单独下载安装。
 
-MIT
+**Q: .wps 文件处理失败？**
+A: 确保安装了 WPS Office（Windows）或 LibreOffice（跨平台）。程序会自动依次尝试 pandoc → LibreOffice → WPS COM 三条路径。
+
+**Q: --auto 模式识别错误怎么办？**
+A: 将输出另存为 .md，手动调整 Markdown 标题标记（`#`、`##`、`###`），再用标准模式重新生成。
+
+**Q: 表格里的文字太多怎么办？**
+A: 程序会自动检测内容型表格（单元格超过 20 字），将非首列设为左对齐以提升可读性。
+
+**Q: 支持插入图片吗？**
+A: 暂不支持。如有需要，可在生成的 .docx 中手动插入。
+
+---
+
+## 许可证
+
+MIT License. 详见 [LICENSE](LICENSE) 文件。
