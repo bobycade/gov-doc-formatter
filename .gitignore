@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.pyo
+_auto_temp.md
+.DS_Store
