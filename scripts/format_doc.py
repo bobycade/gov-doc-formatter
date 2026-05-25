@@ -632,22 +632,31 @@ def _read_via_soffice(input_path, plain=False):
 
     tmpdir = tempfile.mkdtemp(prefix='govdoc_')
     try:
-        # Dynamically import the docx skill's soffice helper
-        skills_dir = os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.abspath(__file__))))
-        soffice_py = os.path.join(
-            skills_dir, 'docx', 'scripts', 'office', 'soffice.py')
+        result = None
+        # Dynamically import the docx skill's soffice helper (Unix/Mac only)
+        soffice_py = None
+        try:
+            skills_dir = os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__))))
+            soffice_py = os.path.join(
+                skills_dir, 'docx', 'scripts', 'office', 'soffice.py')
+        except Exception:
+            pass
 
-        if os.path.exists(soffice_py):
-            spec = importlib.util.spec_from_file_location(
-                '_soffice_helper', soffice_py)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            result = mod.run_soffice(
-                ['--headless', '--convert-to', 'docx',
-                 '--outdir', tmpdir, input_path],
-                capture_output=True, text=True, timeout=120)
-        else:
+        if soffice_py and os.path.exists(soffice_py):
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    '_soffice_helper', soffice_py)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                result = mod.run_soffice(
+                    ['--headless', '--convert-to', 'docx',
+                     '--outdir', tmpdir, input_path],
+                    capture_output=True, text=True, timeout=120)
+            except Exception:
+                pass  # Fall through to direct soffice call
+
+        if result is None:
             result = subprocess.run(
                 ['soffice', '--headless', '--convert-to', 'docx',
                  '--outdir', tmpdir, input_path],
@@ -685,23 +694,83 @@ def _read_via_soffice(input_path, plain=False):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def _read_via_wps_com(input_path, plain=False):
+    """Convert .wps/.doc to text via WPS Office COM automation (Windows only).
+
+    Opens the file in WPS Word via COM, saves as .docx, then extracts text
+    with pandoc. Requires WPS Office to be installed.
+    """
+    import subprocess
+
+    tmpdir = tempfile.mkdtemp(prefix='govdoc_wps_')
+    try:
+        abs_input = os.path.abspath(input_path)
+        base = os.path.splitext(os.path.basename(input_path))[0]
+        tmp_docx = os.path.join(tmpdir, base + '.docx')
+
+        ps_script = (
+            '$w = New-Object -ComObject Kwps.Application;'
+            '$w.Visible = $false;'
+            '$doc = $w.Documents.Open(\'{0}\');'
+            '$doc.SaveAs(\'{1}\', 16);'
+            '$doc.Close();'
+            '$w.Quit();'
+            '[Console]::WriteLine(\'OK\')'
+        ).format(abs_input.replace("'", "''"), tmp_docx.replace("'", "''"))
+
+        result = subprocess.run(
+            ['powershell', '-NoProfile', '-Command', ps_script],
+            capture_output=True, text=True, timeout=120,
+            env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
+
+        if result.returncode != 0 or 'OK' not in result.stdout:
+            raise RuntimeError(
+                f"WPS COM conversion failed: "
+                f"{result.stderr.strip() or result.stdout.strip()}")
+
+        if not os.path.exists(tmp_docx):
+            raise RuntimeError(
+                f"WPS COM did not produce expected output: {tmp_docx}")
+
+        fmt = 'plain' if plain else 'markdown'
+        result = subprocess.run(
+            ['pandoc', tmp_docx, '-t', fmt, '--wrap=none'],
+            capture_output=True, text=True, encoding='utf-8',
+            env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"pandoc extraction failed after WPS COM conversion: "
+                f"{result.stderr}")
+
+        text = result.stdout
+        text = text.replace('\\*', '*')
+        text = text.replace('\\[', '[')
+        text = text.replace('\\]', ']')
+        text = text.replace('\\#', '#')
+        return text
+
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def _read_binary_doc(input_path, plain=False):
     """Read .wps or .doc binary document via cascading conversion.
 
     Tries in order:
-      1. pandoc (some installs support .doc/.wps via Word COM or custom readers)
+      1. pandoc -f doc (may work if Word COM/libreoffice backend available)
       2. LibreOffice soffice (headless conversion to .docx, then pandoc)
-      3. Helpful error message with installation instructions
+      3. WPS Office COM (Windows only, opens WPS Word to convert)
+      4. Helpful error message with installation instructions
     """
     import subprocess
 
     errors = []
 
-    # Stage 1: try pandoc directly
+    # Stage 1: try pandoc with -f doc (binary doc format)
     try:
         fmt = 'plain' if plain else 'markdown'
         result = subprocess.run(
-            ['pandoc', input_path, '-t', fmt, '--wrap=none'],
+            ['pandoc', '-f', 'doc', input_path, '-t', fmt, '--wrap=none'],
             capture_output=True, text=True, encoding='utf-8',
             env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
         if result.returncode == 0 and result.stdout.strip():
@@ -727,15 +796,24 @@ def _read_binary_doc(input_path, plain=False):
     except Exception as e:
         errors.append(f"soffice: {e}")
 
-    # Stage 3: all methods failed
+    # Stage 3: try WPS Office COM (Windows only)
+    try:
+        return _read_via_wps_com(input_path, plain)
+    except FileNotFoundError:
+        errors.append("WPS COM: PowerShell not found")
+    except Exception as e:
+        errors.append(f"WPS COM: {e}")
+
+    # All methods failed
     ext = os.path.splitext(input_path)[1]
     raise RuntimeError(
         f"Cannot read {ext} file '{os.path.basename(input_path)}'.\n"
         f"Conversion attempts:\n"
         + ''.join(f"  - {err}\n" for err in errors) +
-        f"\nTo enable {ext} support, install LibreOffice:\n"
-        f"  https://www.libreoffice.org/download/\n"
-        f"Or manually convert {ext} to .docx first, then use --auto mode."
+        f"\nTo enable {ext} support:\n"
+        f"  - Install LibreOffice: https://www.libreoffice.org/download/\n"
+        f"  - Or install WPS Office (Windows): https://www.wps.cn/\n"
+        f"  - Or manually convert {ext} to .docx first, then use --auto mode."
     )
 
 
